@@ -1,6 +1,6 @@
 # zenburn theme
 
-%sh{
+%%sh{
     # define some named colors
     zentext="rgb:cfcfcf"
     zenselectionbg="rgb:3f7fcc"

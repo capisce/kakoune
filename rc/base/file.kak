@@ -1,4 +1,4 @@
-hook global BufOpenFile .* %{ %sh{
+hook global BufOpenFile .* %{ %%sh{
     if [ -z "${kak_opt_filetype}" ]; then
         mime=$(file -b --mime-type "${kak_buffile}")
         case "${mime}" in

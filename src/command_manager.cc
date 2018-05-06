@@ -170,6 +170,10 @@ Token parse_percent_token(Reader& reader, bool throw_on_unterminated)
 {
     kak_assert(*reader == '%');
     ++reader;
+    const bool reparse =reader and *reader == '%';
+    if (reparse)
+        ++reader;
+
     const auto type_start = reader.pos;
     while (reader and iswalpha(*reader))
         ++reader;
@@ -208,7 +212,7 @@ Token parse_percent_token(Reader& reader, bool throw_on_unterminated)
                                      coord.line, coord.column, type_name,
                                      opening_delimiter, closing_delimiter)};
 
-        return {type, start - str_beg, coord, token.str()};
+        return {type, start - str_beg, coord, token.str(), reparse};
     }
     else
     {
@@ -219,7 +223,7 @@ Token parse_percent_token(Reader& reader, bool throw_on_unterminated)
                                      coord.line, coord.column, type_name,
                                      opening_delimiter, opening_delimiter)};
 
-        return {type, start - str_beg, coord, std::move(token)};
+        return {type, start - str_beg, coord, std::move(token), reparse};
     }
 }
 
@@ -302,7 +306,7 @@ Optional<Token> CommandParser::read_token(bool throw_on_unterminated)
             ++m_reader;
         return Token{c == '"' ? Token::Type::RawEval
                               : Token::Type::RawQuoted,
-                     start - line.begin(), coord, std::move(token)};
+                     start - line.begin(), coord, std::move(token), false};
     }
     else if (c == '%')
     {
@@ -315,7 +319,7 @@ Optional<Token> CommandParser::read_token(bool throw_on_unterminated)
     {
         ++m_reader;
         return Token{Token::Type::CommandSeparator,
-                     m_reader.pos - line.begin(), coord, {}};
+                     m_reader.pos - line.begin(), coord, {}, false};
     }
     else
     {
@@ -323,7 +327,7 @@ Optional<Token> CommandParser::read_token(bool throw_on_unterminated)
             return is_command_separator(c) or is_horizontal_blank(c);
         }, [](Codepoint c) { return c == '%'; });
         return Token{Token::Type::Raw, start - line.begin(),
-                     coord, std::move(str)};
+                     coord, std::move(str), false};
     }
     return {};
 }
@@ -435,25 +439,25 @@ void CommandManager::execute(StringView command_line,
                              Context& context, const ShellContext& shell_context)
 {
     CommandParser parser(command_line);
-    struct ShellParser {
-        ShellParser(String&& str) : output{std::move(str)}, parser{output} {}
+    struct Reparser {
+        Reparser(String&& str) : output{std::move(str)}, parser{output} {}
         String output;
         CommandParser parser;
     };
-    Vector<ShellParser> shell_parser_stack;
+    Vector<Reparser> reparser_stack;
 
     auto next_token = [&] {
-        while (not shell_parser_stack.empty())
+        while (not reparser_stack.empty())
         {
-            if (auto shell_token = shell_parser_stack.back().parser.read_token(true))
+            if (auto shell_token = reparser_stack.back().parser.read_token(true))
                 return shell_token;
-            shell_parser_stack.pop_back();
+            reparser_stack.pop_back();
         }
         return parser.read_token(true);
     };
 
     BufferCoord command_coord;
-    Vector<String> params;
+    Vector<String, MemoryDomain::Commands> params;
     while (Optional<Token> token_opt = next_token())
     {
         auto& token = *token_opt;
@@ -465,9 +469,12 @@ void CommandManager::execute(StringView command_line,
             execute_single_command(params, context, shell_context, command_coord);
             params.clear();
         }
-        // Shell expand are retokenized
-        else if (token.type == Token::Type::ShellExpand)
-            shell_parser_stack.emplace_back(expand_token(token, context, shell_context));
+        else if (token.reparse)
+        {
+            auto str = expand_token(token, context, shell_context);
+            if (not str.empty())
+                reparser_stack.push_back(std::move(str));
+        }
         else if (token.type == Token::Type::ArgExpand and token.content == '@')
             params.insert(params.end(), shell_context.params.begin(),
                           shell_context.params.end());
@@ -571,7 +578,7 @@ Completions CommandManager::complete(const Context& context,
     }
 
     if (is_last_token)
-        tokens.push_back({Token::Type::Raw, command_line.length(), parser.coord(), {}});
+        tokens.push_back({Token::Type::Raw, command_line.length(), parser.coord(), {}, false});
     kak_assert(not tokens.empty());
     const auto& token = tokens.back();
 

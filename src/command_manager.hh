@@ -58,6 +58,7 @@ struct Token
     ByteCount pos;
     BufferCoord coord;
     String content;
+    bool reparse;
 };
 
 struct Reader
